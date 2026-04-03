@@ -5,25 +5,13 @@ const Message = require('../models/Message');
 const User = require('../models/User');
 const ApiError = require('../utils/ApiError');
 const asyncHandler = require('../utils/asyncHandler');
-const uploadFileToCloudinary = require('../utils/uploadFileToCloudinary');
 const { allowedMimeTypes } = require('../middleware/uploadMiddleware');
 const { deliverMessageIfOnline } = require('../utils/messageDelivery');
 const { formatMessage } = require('../utils/messageFormatter');
 const { accessChatForUsers, syncChatLastMessage } = require('../utils/chatHelpers');
+const { buildPublicFileUrl } = require('../utils/fileStorage');
 
 const normalizeMimeType = (value) => value.split(';')[0].trim();
-
-const resolveResourceType = (messageType, mimeType) => {
-  if (messageType === 'image' || mimeType.startsWith('image/')) {
-    return 'image';
-  }
-
-  if (messageType === 'audio' || mimeType.startsWith('audio/') || mimeType.startsWith('video/')) {
-    return 'video';
-  }
-
-  return 'raw';
-};
 
 const uploadMessageMedia = asyncHandler(async (req, res) => {
   const senderId = req.user._id.toString();
@@ -63,11 +51,7 @@ const uploadMessageMedia = asyncHandler(async (req, res) => {
     throw new ApiError(StatusCodes.NOT_FOUND, 'Receiver not found');
   }
 
-  const uploadResult = await uploadFileToCloudinary(file.buffer, {
-    folder: 'chat-web-app/messages',
-    public_id: `${Date.now()}-${file.originalname.replace(/\s+/g, '-')}`,
-    resource_type: resolveResourceType(type, normalizedMimeType)
-  });
+  const publicFileUrl = buildPublicFileUrl(req, file.filename);
 
   const chat = await accessChatForUsers(senderId, receiverId);
 
@@ -77,8 +61,8 @@ const uploadMessageMedia = asyncHandler(async (req, res) => {
     receiverId,
     content: caption,
     type,
-    mediaUrl: uploadResult.secure_url,
-    fileUrl: uploadResult.secure_url,
+    mediaUrl: publicFileUrl,
+    fileUrl: publicFileUrl,
     fileName: file.originalname,
     mimeType: normalizedMimeType,
     fileType: normalizedMimeType,
@@ -101,6 +85,7 @@ const uploadMessageMedia = asyncHandler(async (req, res) => {
     success: true,
     message: 'Media uploaded successfully',
     data: {
+      fileUrl: publicFileUrl,
       message: formatMessage(message)
     }
   });

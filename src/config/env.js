@@ -1,5 +1,7 @@
 const DEFAULT_PORT = 5000;
 
+const trimTrailingSlash = (value = '') => value.replace(/\/+$/, '');
+
 const parseAllowedOrigins = (value = '') =>
   value
     .split(',')
@@ -38,6 +40,7 @@ const validateEnv = () => {
 
   return {
     allowedOrigins,
+    backendPublicUrl: trimTrailingSlash(process.env.BACKEND_PUBLIC_URL || process.env.RENDER_EXTERNAL_URL || ''),
     bcryptSaltRounds: parsePositiveInteger(process.env.BCRYPT_SALT_ROUNDS, 12),
     isProduction: nodeEnv === 'production',
     mongoUri: process.env.MONGODB_URI,

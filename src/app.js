@@ -14,6 +14,7 @@ const routes = require('./routes');
 const notFound = require('./middleware/notFound');
 const errorHandler = require('./middleware/errorHandler');
 const logger = require('./utils/logger');
+const { ensureUploadsDirectory, uploadsDirectory } = require('./utils/fileStorage');
 
 // Create Express application instance
 const app = express();
@@ -44,6 +45,7 @@ app.use(
 );
 
 app.use(compression());
+ensureUploadsDirectory();
 
 const resolveCorsOrigin = (origin, callback) => {
   if (!origin) {
@@ -88,16 +90,30 @@ app.use(
   })
 );
 
-// Health check endpoint for monitoring and load balancers
-app.get('/health', (_req, res) => {
-  res.status(200).json({
-    success: true,
-    message: 'Server is healthy'
-  });
-});
+app.use(
+  '/uploads',
+  express.static(uploadsDirectory, {
+    dotfiles: 'deny',
+    fallthrough: false,
+    index: false,
+    maxAge: env.isProduction ? '1d' : 0
+  })
+);
 
 // Apply rate limiting to all API routes
 app.use('/api', limiter, routes);
+
+// Health check endpoint for monitoring and deployment platforms
+app.get('/api/health', (req, res) => {
+  console.log(`[health] ${req.method} ${req.originalUrl} hit`);
+
+  res.status(200).json({
+    success: true,
+    message: 'Server is healthy',
+    uptime: process.uptime(),
+    timestamp: new Date().toISOString()
+  });
+});
 
 // Error handling middleware (must be last)
 app.use(notFound);

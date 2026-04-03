@@ -13,6 +13,8 @@ const createSocketServer = require('./socket/socketServer');
 const backfillMessageExpirations = require('./utils/backfillMessageExpirations');
 const logger = require('./utils/logger');
 
+console.log('[server] src/server.js is running');
+
 // Main function to start the server
 const startServer = async () => {
   try {
@@ -24,6 +26,7 @@ const startServer = async () => {
     createSocketServer(httpServer);
 
     httpServer.listen(PORT, () => {
+      console.log(`[server] HTTP server listening on port ${PORT}`);
       logger.info(`Server running on port ${PORT}`, {
         environment: env.nodeEnv
       });
