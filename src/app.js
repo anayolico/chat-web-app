@@ -69,11 +69,13 @@ const resolveCorsOrigin = (origin, callback) => {
 };
 
 // CORS configuration: Allow requests from client URL or all origins in development
-app.use(
-  cors({
-    origin: resolveCorsOrigin
-  })
-);
+app.use(cors({
+  origin: [
+    "http://localhost:3000",
+    "https://chat-web-app-frontend-eight.vercel.app"
+  ],
+  credentials: true
+}));
 
 // Body parsing middleware: Parse JSON and URL-encoded request bodies
 app.use(express.json({ limit: '1mb' }));
