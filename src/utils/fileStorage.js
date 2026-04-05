@@ -19,7 +19,8 @@ const buildStoredFileName = (originalName = 'file') => {
   const extension = path.extname(originalName);
   const baseName = path.basename(originalName, extension);
   const safeBaseName = sanitizeFileNamePart(baseName) || 'file';
-  const safeExtension = sanitizeFileNamePart(extension).replace(/^-+/, '');
+  const normalizedExtension = extension.replace(/^\./, '');
+  const safeExtension = sanitizeFileNamePart(normalizedExtension);
   const timestamp = Date.now();
   const randomSuffix = Math.random().toString(36).slice(2, 8);
 

@@ -5,13 +5,11 @@ const Message = require('../models/Message');
 const User = require('../models/User');
 const ApiError = require('../utils/ApiError');
 const asyncHandler = require('../utils/asyncHandler');
-const { allowedMimeTypes } = require('../middleware/uploadMiddleware');
+const { allowedMimeTypes, normalizeMimeType } = require('../middleware/uploadMiddleware');
 const { deliverMessageIfOnline } = require('../utils/messageDelivery');
 const { formatMessage } = require('../utils/messageFormatter');
 const { accessChatForUsers, syncChatLastMessage } = require('../utils/chatHelpers');
 const { buildPublicFileUrl } = require('../utils/fileStorage');
-
-const normalizeMimeType = (value) => value.split(';')[0].trim();
 
 const uploadMessageMedia = asyncHandler(async (req, res) => {
   const senderId = req.user._id.toString();
@@ -85,7 +83,12 @@ const uploadMessageMedia = asyncHandler(async (req, res) => {
     success: true,
     message: 'Media uploaded successfully',
     data: {
+      fileName: file.originalname,
+      filePath: `/uploads/${encodeURIComponent(file.filename)}`,
       fileUrl: publicFileUrl,
+      mediaUrl: publicFileUrl,
+      mimeType: normalizedMimeType,
+      fileSize: file.size,
       message: formatMessage(message)
     }
   });

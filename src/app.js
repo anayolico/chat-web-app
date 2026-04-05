@@ -93,10 +93,19 @@ app.use(
 app.use(
   '/uploads',
   express.static(uploadsDirectory, {
+    acceptRanges: true,
     dotfiles: 'deny',
     fallthrough: false,
     index: false,
-    maxAge: env.isProduction ? '1d' : 0
+    maxAge: env.isProduction ? '1d' : 0,
+    redirect: false,
+    setHeaders: (res, filePath) => {
+      const extension = filePath.split('.').pop()?.toLowerCase();
+
+      if (['pdf', 'png', 'jpg', 'jpeg', 'gif', 'webp', 'mp3', 'wav', 'ogg', 'webm', 'mp4', 'm4a', 'aac'].includes(extension)) {
+        res.setHeader('Content-Disposition', 'inline');
+      }
+    }
   })
 );
 

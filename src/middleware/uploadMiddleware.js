@@ -17,18 +17,22 @@ const memoryStorage = multer.memoryStorage();
 const normalizeMimeType = (value) => value.split(';')[0].trim();
 
 const allowedMimeTypes = {
-  image: ['image/jpeg', 'image/png', 'image/webp', 'image/gif'],
-  audio: ['audio/webm', 'audio/mpeg', 'audio/wav', 'audio/ogg', 'audio/mp4'],
+  image: ['image/jpeg', 'image/jpg', 'image/png', 'image/webp', 'image/gif'],
+  audio: ['audio/webm', 'audio/mpeg', 'audio/mp3', 'audio/wav', 'audio/ogg', 'audio/mp4', 'audio/x-m4a', 'audio/aac'],
   file: [
     'image/jpeg',
+    'image/jpg',
     'image/png',
     'image/webp',
     'image/gif',
     'audio/webm',
     'audio/mpeg',
+    'audio/mp3',
     'audio/wav',
     'audio/ogg',
     'audio/mp4',
+    'audio/x-m4a',
+    'audio/aac',
     'application/pdf',
     'application/msword',
     'application/vnd.openxmlformats-officedocument.wordprocessingml.document'
@@ -66,6 +70,7 @@ const profileImageUpload = createUploader({
 
 module.exports = {
   allowedMimeTypes,
+  normalizeMimeType,
   uploadSingleMedia: mediaUpload.single('file'),
   uploadSingleProfileImage: profileImageUpload.single('profileImage')
 };
