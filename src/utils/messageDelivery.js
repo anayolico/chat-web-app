@@ -137,7 +137,14 @@ const deliverMessageIfOnline = async (message) => {
 
   await markMessagesAsDelivered([message]);
   emitToUser(receiverId, 'receiveMessage', formatMessage(message));
+  emitToUser(receiverId, 'receive_message', formatMessage(message));
   emitToUser(senderId, 'messageStatusUpdated', {
+    messageId: message._id.toString(),
+    status: message.status,
+    deliveredAt: message.deliveredAt,
+    seenAt: message.seenAt || null
+  });
+  emitToUser(senderId, 'message_status_updated', {
     messageId: message._id.toString(),
     status: message.status,
     deliveredAt: message.deliveredAt,
@@ -152,7 +159,19 @@ const deliverMessageIfOnline = async (message) => {
       deliveredAt: message.deliveredAt,
       seenAt: message.seenAt
     });
+    emitToUser(receiverId, 'message_status_updated', {
+      messageId: message._id.toString(),
+      status: message.status,
+      deliveredAt: message.deliveredAt,
+      seenAt: message.seenAt
+    });
     emitToUser(senderId, 'messageStatusUpdated', {
+      messageId: message._id.toString(),
+      status: message.status,
+      deliveredAt: message.deliveredAt,
+      seenAt: message.seenAt
+    });
+    emitToUser(senderId, 'message_status_updated', {
       messageId: message._id.toString(),
       status: message.status,
       deliveredAt: message.deliveredAt,

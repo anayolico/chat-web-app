@@ -6,11 +6,11 @@ const { Server } = require('socket.io');
 const jwt = require('jsonwebtoken');
 const mongoose = require('mongoose');
 
-const { validateEnv } = require('../config/env');
 const Message = require('../models/Message');
 const User = require('../models/User');
 const Chat = require('../models/Chat');
 const { formatMessage } = require('../utils/messageFormatter');
+const { getSocketCorsOptions } = require('../utils/corsConfig');
 const { deliverMessageIfOnline, markMessagesAsDelivered, markMessagesAsSeen } = require('../utils/messageDelivery');
 const { formatPresence } = require('../utils/presenceFormatter');
 const { clearSocketRateLimit, isRateLimited } = require('../utils/socketRateLimiter');
@@ -56,7 +56,23 @@ const broadcastPresence = (userId, isOnline, lastSeen = null) => {
 
   if (io) {
     io.emit('presence:update', payload);
+    io.emit(isOnline ? 'user_online' : 'user_offline', payload);
   }
+};
+
+const emitIncomingMessage = (target, payload) => {
+  emitToUser(target, 'receiveMessage', payload);
+  emitToUser(target, 'receive_message', payload);
+};
+
+const emitMessageStatusUpdate = (target, payload) => {
+  emitToUser(target, 'messageStatusUpdated', payload);
+  emitToUser(target, 'message_status_updated', payload);
+};
+
+const emitTypingUpdate = (target, payload) => {
+  emitToUser(target, 'typing:update', payload);
+  emitToUser(target, 'typing', payload);
 };
 
 // Deliver pending messages when user comes online
@@ -80,7 +96,13 @@ const deliverPendingMessages = async (_io, userId) => {
   await markMessagesAsDelivered(pendingMessages);
 
   pendingMessages.forEach((message) => {
-    emitToUser(userId, 'receiveMessage', formatMessage(message));
+    emitIncomingMessage(userId, formatMessage(message));
+    emitMessageStatusUpdate(message.senderId.toString(), {
+      messageId: message._id.toString(),
+      status: message.status,
+      deliveredAt: message.deliveredAt,
+      seenAt: message.seenAt || null
+    });
   });
 };
 
@@ -202,14 +224,11 @@ const maybeHardDeleteMessage = async (message) => {
 
 // Create and configure Socket.IO server
 const createSocketServer = (httpServer) => {
-  const env = validateEnv();
   const io = new Server(httpServer, {
-    cors: {
-      origin: env.isProduction ? env.allowedOrigins : env.allowedOrigins.length > 0 ? env.allowedOrigins : true,
-      methods: ['GET', 'POST']
-    },
+    cors: getSocketCorsOptions(),
     pingTimeout: 20000,
-    pingInterval: 25000
+    pingInterval: 25000,
+    transports: ['websocket', 'polling']
   });
 
   setSocketServer(io);
@@ -267,7 +286,7 @@ const createSocketServer = (httpServer) => {
     }
 
     // Handle sending messages
-    socket.on('sendMessage', async (payload, callback) => {
+    const handleSendMessage = async (payload, callback) => {
       try {
         if (isRateLimited(socket.id, 'sendMessage')) {
           throw new Error('Message rate limit exceeded. Please slow down.');
@@ -301,6 +320,7 @@ const createSocketServer = (httpServer) => {
         await syncChatLastMessage(chatId, message);
         // Broadcast to chat room
         io.to(getChatRoom(chatId)).emit('receiveMessage', formattedMessage);
+        io.to(getChatRoom(chatId)).emit('receive_message', formattedMessage);
         // Deliver if receiver is online
         await deliverMessageIfOnline(message);
 
@@ -320,7 +340,10 @@ const createSocketServer = (httpServer) => {
           });
         }
       }
-    });
+    };
+
+    socket.on('sendMessage', handleSendMessage);
+    socket.on('send_message', handleSendMessage);
 
     socket.on('editMessage', async (payload, callback) => {
       try {
@@ -487,8 +510,8 @@ const createSocketServer = (httpServer) => {
           seenAt: message.seenAt
         };
 
-        emitToUser(userId, 'messageStatusUpdated', statusPayload);
-        emitToUser(partnerId, 'messageStatusUpdated', statusPayload);
+        emitMessageStatusUpdate(userId, statusPayload);
+        emitMessageStatusUpdate(partnerId, statusPayload);
       });
     });
 
@@ -541,7 +564,7 @@ const createSocketServer = (httpServer) => {
         return;
       }
 
-      emitToUser(partnerId, 'typing:update', {
+      emitTypingUpdate(partnerId, {
         userId,
         partnerId,
         isTyping: true
@@ -560,10 +583,28 @@ const createSocketServer = (httpServer) => {
         return;
       }
 
-      emitToUser(partnerId, 'typing:update', {
+      emitTypingUpdate(partnerId, {
         userId,
         partnerId,
         isTyping: false
+      });
+    });
+
+    socket.on('typing', (payload) => {
+      if (isRateLimited(socket.id, 'typing:start')) {
+        return;
+      }
+
+      const partnerId = payload?.partnerId?.toString().trim();
+
+      if (!partnerId || !mongoose.Types.ObjectId.isValid(partnerId)) {
+        return;
+      }
+
+      emitTypingUpdate(partnerId, {
+        userId,
+        partnerId,
+        isTyping: true
       });
     });
 
@@ -600,8 +641,8 @@ const createSocketServer = (httpServer) => {
           seenAt: message.seenAt
         };
 
-        emitToUser(userId, 'messageStatusUpdated', statusPayload);
-        emitToUser(partnerId, 'messageStatusUpdated', statusPayload);
+        emitMessageStatusUpdate(userId, statusPayload);
+        emitMessageStatusUpdate(partnerId, statusPayload);
       });
     });
 

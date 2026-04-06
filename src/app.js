@@ -14,6 +14,7 @@ const routes = require('./routes');
 const notFound = require('./middleware/notFound');
 const errorHandler = require('./middleware/errorHandler');
 const logger = require('./utils/logger');
+const { getExpressCorsOptions } = require('./utils/corsConfig');
 const { ensureUploadsDirectory, uploadsDirectory } = require('./utils/fileStorage');
 
 // Create Express application instance
@@ -47,35 +48,8 @@ app.use(
 app.use(compression());
 ensureUploadsDirectory();
 
-const resolveCorsOrigin = (origin, callback) => {
-  if (!origin) {
-    callback(null, true);
-    return;
-  }
-
-  if (!env.isProduction) {
-    if (env.allowedOrigins.length === 0 || env.allowedOrigins.includes(origin)) {
-      callback(null, true);
-      return;
-    }
-  }
-
-  if (env.allowedOrigins.includes(origin)) {
-    callback(null, true);
-    return;
-  }
-
-  callback(new Error('Origin is not allowed by CORS'));
-};
-
-// CORS configuration: Allow requests from client URL or all origins in development
-app.use(cors({
-  origin: [
-    "http://localhost:3000",
-    "https://chat-web-app-frontend-eight.vercel.app"
-  ],
-  credentials: true
-}));
+app.use(cors(getExpressCorsOptions()));
+app.options('*', cors(getExpressCorsOptions()));
 
 // Body parsing middleware: Parse JSON and URL-encoded request bodies
 app.use(express.json({ limit: '1mb' }));
