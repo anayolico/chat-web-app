@@ -1,6 +1,6 @@
-const Message = require('../models/Message');
+const User = require('../models/User');
 const { formatMessage } = require('./messageFormatter');
-const { emitToUser, getActiveConversation, isUserOnline } = require('../socket/socketState');
+const { emitToUser, getActiveChat, isUserOnline } = require('../socket/socketState');
 
 const syncAggregateStatus = (message) => {
   const receipts = message.statusByUser || [];
@@ -14,7 +14,10 @@ const syncAggregateStatus = (message) => {
 
   if (receipts.every((receipt) => receipt.status === 'seen')) {
     const seenTimestamps = receipts.map((receipt) => receipt.seenAt).filter(Boolean);
-    const latestSeenAt = seenTimestamps.length ? new Date(Math.max(...seenTimestamps.map((value) => new Date(value).getTime()))) : null;
+    const latestSeenAt = seenTimestamps.length
+      ? new Date(Math.max(...seenTimestamps.map((value) => new Date(value).getTime())))
+      : null;
+
     message.status = 'seen';
     message.deliveredAt = latestSeenAt;
     message.seenAt = latestSeenAt;
@@ -28,6 +31,7 @@ const syncAggregateStatus = (message) => {
     const latestDeliveredAt = deliveredTimestamps.length
       ? new Date(Math.max(...deliveredTimestamps.map((value) => new Date(value).getTime())))
       : null;
+
     message.status = 'delivered';
     message.deliveredAt = latestDeliveredAt;
     message.seenAt = null;
@@ -43,15 +47,6 @@ const updateReceipt = (message, userId, nextStatus, timestamp) => {
   const receipt = (message.statusByUser || []).find((entry) => entry.userId?.toString() === userId.toString());
 
   if (!receipt) {
-    message.statusByUser = [
-      ...(message.statusByUser || []),
-      {
-        userId,
-        status: nextStatus,
-        deliveredAt: nextStatus !== 'sent' ? timestamp : null,
-        seenAt: nextStatus === 'seen' ? timestamp : null
-      }
-    ];
     return;
   }
 
@@ -65,22 +60,31 @@ const updateReceipt = (message, userId, nextStatus, timestamp) => {
   }
 };
 
-const markMessagesAsDelivered = async (messages) => {
-  if (messages.length === 0) {
+const buildReceiptUpdate = (message) => ({
+  messageId: message._id.toString(),
+  status: message.status,
+  deliveredAt: message.deliveredAt,
+  seenAt: message.seenAt || null
+});
+
+const emitStatusUpdate = (userId, payload) => {
+  emitToUser(userId, 'messageStatusUpdated', payload);
+  emitToUser(userId, 'message_status_updated', payload);
+};
+
+const markMessagesAsDelivered = async (messages, recipientId) => {
+  if (messages.length === 0 || !recipientId) {
     return;
   }
 
-  const ids = messages.map((message) => message._id);
   const deliveredAt = new Date();
 
   await Promise.all(
     messages.map((message) =>
-      Message.updateOne(
-        { _id: message._id, 'statusByUser.userId': message.receiverId },
+      message.constructor.updateOne(
+        { _id: message._id, 'statusByUser.userId': recipientId },
         {
           $set: {
-            status: 'delivered',
-            deliveredAt,
             'statusByUser.$.status': 'delivered',
             'statusByUser.$.deliveredAt': deliveredAt
           }
@@ -90,31 +94,27 @@ const markMessagesAsDelivered = async (messages) => {
   );
 
   messages.forEach((message) => {
-    updateReceipt(message, message.receiverId, 'delivered', deliveredAt);
+    updateReceipt(message, recipientId, 'delivered', deliveredAt);
     syncAggregateStatus(message);
   });
 };
 
-const markMessagesAsSeen = async (messages) => {
-  if (messages.length === 0) {
+const markMessagesAsSeen = async (messages, viewerId) => {
+  if (messages.length === 0 || !viewerId) {
     return;
   }
 
-  const ids = messages.map((message) => message._id);
   const seenAt = new Date();
 
   await Promise.all(
     messages.map((message) =>
-      Message.updateOne(
-        { _id: message._id, 'statusByUser.userId': message.receiverId },
+      message.constructor.updateOne(
+        { _id: message._id, 'statusByUser.userId': viewerId },
         {
           $set: {
-            status: 'seen',
-            seenAt,
-            deliveredAt: seenAt,
             'statusByUser.$.status': 'seen',
-            'statusByUser.$.seenAt': seenAt,
-            'statusByUser.$.deliveredAt': seenAt
+            'statusByUser.$.deliveredAt': seenAt,
+            'statusByUser.$.seenAt': seenAt
           }
         }
       )
@@ -122,64 +122,54 @@ const markMessagesAsSeen = async (messages) => {
   );
 
   messages.forEach((message) => {
-    updateReceipt(message, message.receiverId, 'seen', seenAt);
+    updateReceipt(message, viewerId, 'seen', seenAt);
     syncAggregateStatus(message);
   });
 };
 
-const deliverMessageIfOnline = async (message) => {
-  const receiverId = message.receiverId.toString();
+const deliverMessageIfOnline = async (message, options = {}) => {
   const senderId = message.senderId.toString();
+  const chatId = message.chatId?.toString() || '';
+  const formattedMessage = options.formattedMessage || formatMessage(message);
+  const recipientIds = (message.statusByUser || []).map((receipt) => receipt.userId?.toString()).filter(Boolean);
 
-  if (!isUserOnline(receiverId)) {
+  if (recipientIds.length === 0) {
     return false;
   }
 
-  await markMessagesAsDelivered([message]);
-  emitToUser(receiverId, 'receiveMessage', formatMessage(message));
-  emitToUser(receiverId, 'receive_message', formatMessage(message));
-  emitToUser(senderId, 'messageStatusUpdated', {
-    messageId: message._id.toString(),
-    status: message.status,
-    deliveredAt: message.deliveredAt,
-    seenAt: message.seenAt || null
-  });
-  emitToUser(senderId, 'message_status_updated', {
-    messageId: message._id.toString(),
-    status: message.status,
-    deliveredAt: message.deliveredAt,
-    seenAt: message.seenAt || null
-  });
+  let deliveredToAnyone = false;
 
-  if (getActiveConversation(receiverId) === senderId) {
-    await markMessagesAsSeen([message]);
-    emitToUser(receiverId, 'messageStatusUpdated', {
-      messageId: message._id.toString(),
-      status: message.status,
-      deliveredAt: message.deliveredAt,
-      seenAt: message.seenAt
-    });
-    emitToUser(receiverId, 'message_status_updated', {
-      messageId: message._id.toString(),
-      status: message.status,
-      deliveredAt: message.deliveredAt,
-      seenAt: message.seenAt
-    });
-    emitToUser(senderId, 'messageStatusUpdated', {
-      messageId: message._id.toString(),
-      status: message.status,
-      deliveredAt: message.deliveredAt,
-      seenAt: message.seenAt
-    });
-    emitToUser(senderId, 'message_status_updated', {
-      messageId: message._id.toString(),
-      status: message.status,
-      deliveredAt: message.deliveredAt,
-      seenAt: message.seenAt
-    });
+  for (const recipientId of recipientIds) {
+    if (!isUserOnline(recipientId)) {
+      continue;
+    }
+
+    deliveredToAnyone = true;
+    await markMessagesAsDelivered([message], recipientId);
+    emitToUser(recipientId, 'receiveMessage', formattedMessage);
+    emitToUser(recipientId, 'receive_message', formattedMessage);
+    emitStatusUpdate(senderId, buildReceiptUpdate(message));
+
+    if (getActiveChat(recipientId) !== chatId) {
+      continue;
+    }
+
+    let shouldEmitSeenUpdate = true;
+
+    if (message.receiverId?.toString() === recipientId) {
+      const receiver = await User.findById(recipientId).select('privacy.allowReadReceipts');
+      shouldEmitSeenUpdate = receiver?.privacy?.allowReadReceipts !== false;
+    }
+
+    await markMessagesAsSeen([message], recipientId);
+    emitStatusUpdate(recipientId, buildReceiptUpdate(message));
+
+    if (shouldEmitSeenUpdate) {
+      emitStatusUpdate(senderId, buildReceiptUpdate(message));
+    }
   }
 
-  return true;
+  return deliveredToAnyone;
 };
 
 module.exports = {

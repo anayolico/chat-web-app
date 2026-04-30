@@ -7,16 +7,35 @@ const { isUserOnline } = require('../socket/socketState');
 const buildParticipantsKey = (userIds) =>
   [...userIds].map((userId) => userId.toString()).sort().join(':');
 
-const formatChatUser = (user) => ({
-  id: user._id.toString(),
-  name: user.name,
-  profilePic: user.profilePic || '',
-  status: isUserOnline(user._id.toString()) ? 'online' : 'offline',
-  isOnline: isUserOnline(user._id.toString()),
-  lastSeen: user.lastSeen || null,
-  phone: user.phone || '',
-  createdAt: user.createdAt || null
-});
+const isBlockedByUser = (user, targetUserId) =>
+  (user?.blockedUsers || []).some((blockedUserId) => blockedUserId?.toString() === targetUserId?.toString());
+
+const formatChatUser = (user, viewer = null) => {
+  const userId = user._id.toString();
+  const isOnline = isUserOnline(userId);
+  const isBlocked = viewer ? isBlockedByUser(viewer, userId) : false;
+  const viewerIsBlocked = viewer ? isBlockedByUser(user, viewer._id) : false;
+  const showOnlineStatus = user.privacy?.showOnlineStatus !== false && !isBlocked && !viewerIsBlocked;
+  const showLastSeen = user.privacy?.showLastSeen !== false && !isBlocked && !viewerIsBlocked;
+
+  return {
+    id: userId,
+    name: user.name,
+    profilePic: user.profilePic || '',
+    status: showOnlineStatus && isOnline ? 'online' : 'offline',
+    isOnline: showOnlineStatus ? isOnline : false,
+    lastSeen: showLastSeen ? user.lastSeen || null : null,
+    phone: user.phone || '',
+    createdAt: user.createdAt || null,
+    privacy: {
+      showLastSeen: user.privacy?.showLastSeen !== false,
+      showOnlineStatus: user.privacy?.showOnlineStatus !== false,
+      allowReadReceipts: user.privacy?.allowReadReceipts !== false
+    },
+    isBlocked,
+    viewerIsBlocked
+  };
+};
 
 const buildLastMessagePreview = (message) => {
   if (!message) {
@@ -44,15 +63,35 @@ const buildLastMessagePreview = (message) => {
   };
 };
 
-const formatChat = (chat, currentUserId) => {
-  const participants = (chat.participants || []).map(formatChatUser);
-  const partner =
-    participants.find((participant) => participant.id !== currentUserId.toString()) || null;
+const formatChat = (chat, currentUser, unreadCount = 0) => {
+  const currentUserId = currentUser?._id?.toString() || currentUser?.toString() || '';
+  const participants = (chat.participants || []).map((participant) => formatChatUser(participant, currentUser));
+  const partner = participants.find((participant) => participant.id !== currentUserId) || null;
+  const isGroupChat = chat.kind === 'group';
+  const summaryUser = isGroupChat
+    ? {
+        id: chat._id.toString(),
+        kind: 'group',
+        name: chat.name || 'Untitled group',
+        profilePic: '',
+        phone: '',
+        isOnline: false,
+        lastSeen: null,
+        memberCount: participants.length,
+        participants
+      }
+    : partner;
 
   return {
     id: chat._id.toString(),
+    kind: chat.kind || 'direct',
+    name: isGroupChat ? chat.name || 'Untitled group' : chat.name || partner?.name || '',
     participants,
-    user: partner,
+    user: summaryUser,
+    groupOwnerId: chat.groupOwnerId?.toString() || '',
+    memberCount: participants.length,
+    isPinned: (chat.pinnedBy || []).some((userId) => userId.toString() === currentUserId),
+    isSecure: Boolean(chat.isSecure),
     lastMessage: chat.lastMessage?.createdAt
       ? {
           senderId: chat.lastMessage.senderId?.toString() || null,
@@ -64,7 +103,8 @@ const formatChat = (chat, currentUserId) => {
         }
       : null,
     createdAt: chat.createdAt,
-    updatedAt: chat.updatedAt
+    updatedAt: chat.updatedAt,
+    unreadCount: Number.isFinite(unreadCount) ? unreadCount : 0
   };
 };
 
@@ -72,7 +112,10 @@ const accessChatForUsers = async (currentUserId, otherUserId) => {
   const participants = [currentUserId, otherUserId].map((value) => new mongoose.Types.ObjectId(value));
   const participantsKey = buildParticipantsKey(participants);
 
-  let chat = await Chat.findOne({ participantsKey }).populate('participants', 'name phone profilePic lastSeen createdAt');
+  let chat = await Chat.findOne({ participantsKey }).populate(
+    'participants',
+    'name phone profilePic lastSeen createdAt privacy blockedUsers'
+  );
 
   if (!chat) {
     chat = await Chat.create({
@@ -80,7 +123,10 @@ const accessChatForUsers = async (currentUserId, otherUserId) => {
       participantsKey
     });
 
-    chat = await Chat.findById(chat._id).populate('participants', 'name phone profilePic lastSeen createdAt');
+    chat = await Chat.findById(chat._id).populate(
+      'participants',
+      'name phone profilePic lastSeen createdAt privacy blockedUsers'
+    );
   }
 
   if (!chat.lastMessage?.createdAt) {
@@ -120,11 +166,32 @@ const accessChatForUsers = async (currentUserId, otherUserId) => {
       );
 
       await syncChatLastMessage(chat._id, latestMessage);
-      chat = await Chat.findById(chat._id).populate('participants', 'name phone profilePic lastSeen createdAt');
+      chat = await Chat.findById(chat._id).populate(
+        'participants',
+        'name phone profilePic lastSeen createdAt privacy blockedUsers'
+      );
     }
   }
 
   return chat;
+};
+
+const createGroupChat = async ({ creatorId, memberIds, name }) => {
+  const uniqueParticipantIds = Array.from(new Set([creatorId.toString(), ...memberIds.map((memberId) => memberId.toString())]));
+  const participants = uniqueParticipantIds.map((value) => new mongoose.Types.ObjectId(value));
+
+  const chat = await Chat.create({
+    kind: 'group',
+    name: String(name || '').trim(),
+    participants,
+    participantsKey: `group:${new mongoose.Types.ObjectId().toString()}`,
+    groupOwnerId: creatorId
+  });
+
+  return Chat.findById(chat._id).populate(
+    'participants',
+    'name phone profilePic lastSeen createdAt privacy blockedUsers'
+  );
 };
 
 const syncChatLastMessage = async (chatId, message) => {
@@ -172,6 +239,7 @@ const syncChatLastMessageFromHistory = async (chatId) => {
 module.exports = {
   accessChatForUsers,
   buildParticipantsKey,
+  createGroupChat,
   formatChat,
   formatChatUser,
   syncChatLastMessage,

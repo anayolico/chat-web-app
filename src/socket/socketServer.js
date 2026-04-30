@@ -17,12 +17,14 @@ const { clearSocketRateLimit, isRateLimited } = require('../utils/socketRateLimi
 const { accessChatForUsers, syncChatLastMessage, syncChatLastMessageFromHistory } = require('../utils/chatHelpers');
 const logger = require('../utils/logger');
 const {
+  clearActiveChat,
   addUserSocket,
   clearActiveConversation,
   emitToUser,
   getSocketServer,
   isUserOnline,
   removeUserSocket,
+  setActiveChat,
   setActiveConversation,
   setSocketServer
 } = require('./socketState');
@@ -75,14 +77,33 @@ const emitTypingUpdate = (target, payload) => {
   emitToUser(target, 'typing', payload);
 };
 
+const isBlockedRelationship = (currentUser, otherUser) =>
+  (currentUser?.blockedUsers || []).some((blockedUserId) => blockedUserId.toString() === otherUser?._id?.toString()) ||
+  (otherUser?.blockedUsers || []).some((blockedUserId) => blockedUserId.toString() === currentUser?._id?.toString());
+
+const buildReplySnapshot = (message) => ({
+  messageId: message._id,
+  senderId: message.senderId,
+  content: message.deletedForEveryone ? 'This message was deleted' : message.content || '',
+  type: message.type || 'text',
+  fileName: message.fileName || ''
+});
+
+const getMessageRecipientIds = (message) =>
+  (message.statusByUser || []).map((receipt) => receipt.userId?.toString()).filter(Boolean);
+
 // Deliver pending messages when user comes online
 const deliverPendingMessages = async (_io, userId) => {
   // Replay stored messages in order when an offline user reconnects.
   const pendingMessages = await Message.find({
-    receiverId: userId,
-    status: 'sent',
     deletedForEveryone: false,
-    deletedFor: { $ne: userId }
+    deletedFor: { $ne: userId },
+    statusByUser: {
+      $elemMatch: {
+        userId,
+        status: 'sent'
+      }
+    }
   }).sort({ createdAt: 1 });
 
   if (pendingMessages.length === 0) {
@@ -93,8 +114,7 @@ const deliverPendingMessages = async (_io, userId) => {
     return;
   }
 
-  await markMessagesAsDelivered(pendingMessages);
-
+  await markMessagesAsDelivered(pendingMessages, userId);
   pendingMessages.forEach((message) => {
     emitIncomingMessage(userId, formatMessage(message));
     emitMessageStatusUpdate(message.senderId.toString(), {
@@ -113,10 +133,11 @@ const validateMessagePayload = async (payload, senderId) => {
   const clientTempId = payload?.clientTempId?.toString().trim();
   const content = payload?.content?.toString().trim();
   const type = payload?.type?.toString().trim() || 'text';
+  const replyToMessageId = payload?.replyToMessageId?.toString().trim();
 
   // Basic validation
-  if (!receiverId) {
-    throw new Error('receiverId is required');
+  if (!chatId && !receiverId) {
+    throw new Error('Either chatId or receiverId is required');
   }
 
   if (!content) {
@@ -131,23 +152,10 @@ const validateMessagePayload = async (payload, senderId) => {
     throw new Error('type must be one of text, image, audio, or file');
   }
 
-  if (!mongoose.Types.ObjectId.isValid(receiverId)) {
-    throw new Error('receiverId must be a valid user id');
-  }
-
-  if (receiverId === senderId) {
-    throw new Error('senderId and receiverId cannot be the same');
-  }
-
-  // Check if receiver exists
-  const receiverExists = await User.exists({ _id: receiverId });
-  if (!receiverExists) {
-    throw new Error('Receiver not found');
-  }
-
   let chat = null;
+  let resolvedReceiverId = receiverId || null;
+  let recipientIds = [];
 
-  // Validate or create chat
   if (chatId) {
     if (!mongoose.Types.ObjectId.isValid(chatId)) {
       throw new Error('chatId must be a valid chat id');
@@ -155,22 +163,91 @@ const validateMessagePayload = async (payload, senderId) => {
 
     chat = await Chat.findOne({
       _id: chatId,
-      participants: { $all: [senderId, receiverId] }
-    });
+      participants: senderId
+    }).populate('participants', '_id blockedUsers');
 
     if (!chat) {
-      throw new Error('Chat not found for these participants');
+      throw new Error('Chat not found');
+    }
+
+    recipientIds = (chat.participants || [])
+      .map((participant) => participant._id.toString())
+      .filter((participantId) => participantId !== senderId);
+
+    if (chat.kind === 'direct') {
+      resolvedReceiverId = recipientIds[0] || null;
+
+      if (!resolvedReceiverId) {
+        throw new Error('Chat receiver could not be resolved');
+      }
+
+      const [sender, receiver] = await Promise.all([
+        User.findById(senderId).select('_id blockedUsers'),
+        User.findById(resolvedReceiverId).select('_id blockedUsers')
+      ]);
+
+      if (!receiver) {
+        throw new Error('Receiver not found');
+      }
+
+      if (isBlockedRelationship(sender, receiver)) {
+        throw new Error('You cannot send messages in this chat right now');
+      }
     }
   } else {
+    if (!receiverId) {
+      throw new Error('receiverId is required');
+    }
+
+    if (!mongoose.Types.ObjectId.isValid(receiverId)) {
+      throw new Error('receiverId must be a valid user id');
+    }
+
+    if (receiverId === senderId) {
+      throw new Error('senderId and receiverId cannot be the same');
+    }
+
+    const [sender, receiver] = await Promise.all([
+      User.findById(senderId).select('_id blockedUsers'),
+      User.findById(receiverId).select('_id blockedUsers')
+    ]);
+
+    if (!receiver) {
+      throw new Error('Receiver not found');
+    }
+
+    if (isBlockedRelationship(sender, receiver)) {
+      throw new Error('You cannot send messages in this chat right now');
+    }
+
     chat = await accessChatForUsers(senderId, receiverId);
+    recipientIds = [receiverId];
+  }
+
+  let replyTo = null;
+  if (replyToMessageId) {
+    const replyMessage = await Message.findOne({
+      _id: replyToMessageId,
+      chatId: chat._id,
+      deletedFor: { $ne: senderId }
+    });
+
+    if (!replyMessage) {
+      throw new Error('Reply target was not found');
+    }
+
+    replyTo = buildReplySnapshot(replyMessage);
   }
 
   return {
     chatId: chat._id.toString(),
+    chat,
     clientTempId: clientTempId || '',
-    receiverId,
+    receiverId: chat.kind === 'direct' ? resolvedReceiverId : '',
+    recipientIds,
     content,
-    type
+    type,
+    replyTo
   };
 };
 
@@ -179,12 +256,18 @@ const findMessageForParticipant = async (messageId, userId) => {
     throw new Error('messageId must be a valid message id');
   }
 
-  const message = await Message.findOne({
-    _id: messageId,
-    $or: [{ senderId: userId }, { receiverId: userId }]
-  });
+  const message = await Message.findById(messageId);
 
   if (!message) {
+    throw new Error('Message not found');
+  }
+
+  const chat = await Chat.exists({
+    _id: message.chatId,
+    participants: userId
+  });
+
+  if (!chat) {
     throw new Error('Message not found');
   }
 
@@ -196,8 +279,11 @@ const emitMessageUpdate = (message) => {
     message: formatMessage(message)
   };
 
-  emitToUser(message.senderId.toString(), 'messageUpdated', payload);
-  emitToUser(message.receiverId.toString(), 'messageUpdated', payload);
+  const participantIds = [message.senderId.toString(), ...getMessageRecipientIds(message)];
+
+  participantIds.forEach((participantId) => {
+    emitToUser(participantId, 'messageUpdated', payload);
+  });
 };
 
 const emitMessageRemovedForUser = (userId, message) => {
@@ -208,7 +294,7 @@ const emitMessageRemovedForUser = (userId, message) => {
 };
 
 const maybeHardDeleteMessage = async (message) => {
-  const participantIds = [message.senderId, message.receiverId].map((value) => value.toString());
+  const participantIds = [message.senderId.toString(), ...getMessageRecipientIds(message)];
   const deletedForIds = (message.deletedFor || []).map((value) => value.toString());
   const isHiddenForAll = participantIds.every((participantId) => deletedForIds.includes(participantId));
 
@@ -292,28 +378,28 @@ const createSocketServer = (httpServer) => {
           throw new Error('Message rate limit exceeded. Please slow down.');
         }
 
-        const { chatId, clientTempId, receiverId, content, type } = await validateMessagePayload(payload, userId);
+        const { chatId, chat, clientTempId, receiverId, recipientIds, content, type, replyTo } = await validateMessagePayload(payload, userId);
 
         // Create message in database
         const message = await Message.create({
           chatId,
           senderId: userId,
-          receiverId,
+          receiverId: receiverId || null,
           content,
           type,
-          statusByUser: [
-            {
-              userId: receiverId,
-              status: 'sent',
-              deliveredAt: null,
-              seenAt: null
-            }
-          ]
+          replyTo,
+          statusByUser: recipientIds.map((participantId) => ({
+            userId: participantId,
+            status: 'sent',
+            deliveredAt: null,
+            seenAt: null
+          }))
         });
 
         const formattedMessage = {
           ...formatMessage(message),
-          clientTempId
+          clientTempId,
+          senderName: socket.user.name
         };
 
         // Update chat's last message
@@ -322,7 +408,22 @@ const createSocketServer = (httpServer) => {
         io.to(getChatRoom(chatId)).emit('receiveMessage', formattedMessage);
         io.to(getChatRoom(chatId)).emit('receive_message', formattedMessage);
         // Deliver if receiver is online
-        await deliverMessageIfOnline(message);
+        await deliverMessageIfOnline(message, {
+          formattedMessage
+        });
+
+        if (chat?.isSecure) {
+          emitToUser(userId, 'chatSecureModeUpdated', {
+            chatId,
+            isSecure: true
+          });
+          recipientIds.forEach((participantId) => {
+            emitToUser(participantId, 'chatSecureModeUpdated', {
+              chatId,
+              isSecure: true
+            });
+          });
+        }
 
         if (typeof callback === 'function') {
           callback({
@@ -479,6 +580,61 @@ const createSocketServer = (httpServer) => {
       }
     });
 
+    socket.on('message:react', async (payload, callback) => {
+      try {
+        if (isRateLimited(socket.id, 'message:react')) {
+          throw new Error('Reaction rate limit exceeded. Please slow down.');
+        }
+
+        const messageId = payload?.messageId?.toString().trim();
+        const emoji = payload?.emoji?.toString().trim();
+
+        if (!emoji) {
+          throw new Error('emoji is required');
+        }
+
+        const message = await findMessageForParticipant(messageId, userId);
+        const currentReactions = Array.isArray(message.reactions) ? [...message.reactions] : [];
+        const currentIndex = currentReactions.findIndex((reaction) => reaction.userId.toString() === userId);
+
+        if (currentIndex !== -1 && currentReactions[currentIndex].emoji === emoji) {
+          currentReactions.splice(currentIndex, 1);
+        } else if (currentIndex !== -1) {
+          currentReactions[currentIndex] = {
+            userId: new mongoose.Types.ObjectId(userId),
+            emoji,
+            createdAt: new Date()
+          };
+        } else {
+          currentReactions.push({
+            userId: new mongoose.Types.ObjectId(userId),
+            emoji,
+            createdAt: new Date()
+          });
+        }
+
+        message.reactions = currentReactions;
+        await message.save();
+        emitMessageUpdate(message);
+
+        if (typeof callback === 'function') {
+          callback({
+            success: true,
+            data: {
+              message: formatMessage(message)
+            }
+          });
+        }
+      } catch (error) {
+        if (typeof callback === 'function') {
+          callback({
+            success: false,
+            message: error.message || 'Failed to react to message'
+          });
+        }
+      }
+    });
+
     // Handle joining a conversation (mark messages as seen)
     socket.on('conversation:join', async (payload) => {
       const partnerId = payload?.partnerId?.toString().trim();
@@ -500,6 +656,7 @@ const createSocketServer = (httpServer) => {
         return;
       }
 
+      const currentUser = await User.findById(userId).select('privacy.allowReadReceipts');
       await markMessagesAsSeen(unseenMessages);
 
       unseenMessages.forEach((message) => {
@@ -511,7 +668,9 @@ const createSocketServer = (httpServer) => {
         };
 
         emitMessageStatusUpdate(userId, statusPayload);
-        emitMessageStatusUpdate(partnerId, statusPayload);
+        if (currentUser?.privacy?.allowReadReceipts !== false) {
+          emitMessageStatusUpdate(partnerId, statusPayload);
+        }
       });
     });
 

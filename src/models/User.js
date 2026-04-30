@@ -33,6 +33,38 @@ const userSchema = new mongoose.Schema(
       required: false,
       default: ''
     },
+    privacy: {
+      showLastSeen: {
+        type: Boolean,
+        default: true
+      },
+      showOnlineStatus: {
+        type: Boolean,
+        default: true
+      },
+      allowReadReceipts: {
+        type: Boolean,
+        default: true
+      }
+    },
+    preferences: {
+      theme: {
+        type: String,
+        enum: ['aurora', 'sunset', 'midnight'],
+        default: 'aurora'
+      },
+      wallpaper: {
+        type: String,
+        enum: ['nebula', 'dunes', 'grid', 'rain'],
+        default: 'nebula'
+      }
+    },
+    blockedUsers: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      }
+    ],
     // Last seen timestamp for presence tracking
     lastSeen: {
       type: Date,
@@ -51,7 +83,26 @@ const userSchema = new mongoose.Schema(
       required: false,
       default: null,
       select: false
-    }
+    },
+    refreshTokens: [
+      {
+        tokenHash: {
+          type: String,
+          required: true,
+          select: false
+        },
+        expiresAt: {
+          type: Date,
+          required: true,
+          select: false
+        },
+        createdAt: {
+          type: Date,
+          default: Date.now,
+          select: false
+        }
+      }
+    ]
   },
   {
     // Schema options

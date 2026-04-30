@@ -2,6 +2,15 @@ const mongoose = require('mongoose');
 
 const chatSchema = new mongoose.Schema(
   {
+    kind: {
+      type: String,
+      enum: ['direct', 'group'],
+      default: 'direct'
+    },
+    name: {
+      type: String,
+      default: ''
+    },
     participants: [
       {
         type: mongoose.Schema.Types.ObjectId,
@@ -14,6 +23,21 @@ const chatSchema = new mongoose.Schema(
       required: true,
       unique: true,
       trim: true
+    },
+    groupOwnerId: {
+      type: mongoose.Schema.Types.ObjectId,
+      ref: 'User',
+      default: null
+    },
+    pinnedBy: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      }
+    ],
+    isSecure: {
+      type: Boolean,
+      default: false
     },
     lastMessage: {
       senderId: {

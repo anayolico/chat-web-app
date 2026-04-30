@@ -3,6 +3,8 @@ const express = require('express');
 const {
   register,
   login,
+  refreshSession,
+  logout,
   getCurrentUser,
   updateCurrentUser,
   forgotPassword,
@@ -27,6 +29,8 @@ const router = express.Router();
 // Authentication routes
 router.post('/register', authLimiter, registerValidator, validateRequest, register);
 router.post('/login', authLimiter, loginValidator, validateRequest, login);
+router.post('/refresh', refreshSession);
+router.post('/logout', protect, logout);
 router.get('/me', protect, getCurrentUser);
 router.put('/me', protect, uploadLimiter, uploadSingleProfileImage, updateProfileValidator, validateRequest, updateCurrentUser);
 

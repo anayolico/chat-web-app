@@ -2,6 +2,7 @@ let ioInstance = null;
 
 const onlineUsers = new Map();
 const activeConversations = new Map();
+const activeChats = new Map();
 
 const setSocketServer = (io) => {
   ioInstance = io;
@@ -54,6 +55,29 @@ const clearActiveConversation = (userId, partnerId) => {
 
 const getActiveConversation = (userId) => activeConversations.get(userId) || null;
 
+const setActiveChat = (userId, chatId) => {
+  if (!chatId) {
+    activeChats.delete(userId);
+    return;
+  }
+
+  activeChats.set(userId, chatId);
+};
+
+const clearActiveChat = (userId, chatId) => {
+  const currentChatId = activeChats.get(userId);
+
+  if (!currentChatId) {
+    return;
+  }
+
+  if (!chatId || currentChatId === chatId) {
+    activeChats.delete(userId);
+  }
+};
+
+const getActiveChat = (userId) => activeChats.get(userId) || null;
+
 const emitToUser = (userId, eventName, payload) => {
   if (!ioInstance) {
     return;
@@ -64,12 +88,15 @@ const emitToUser = (userId, eventName, payload) => {
 
 module.exports = {
   addUserSocket,
+  clearActiveChat,
   emitToUser,
+  getActiveChat,
   getActiveConversation,
   getSocketServer,
   isUserOnline,
   removeUserSocket,
   clearActiveConversation,
+  setActiveChat,
   setActiveConversation,
   setSocketServer
 };

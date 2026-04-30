@@ -78,11 +78,17 @@ const verifyResetOtpValidator = [
 
 const updateProfileValidator = [
   body('name')
+    .optional()
     .trim()
     .notEmpty()
-    .withMessage('Name is required')
+    .withMessage('Name cannot be empty')
     .isLength({ min: 2, max: 50 })
-    .withMessage('Name must be between 2 and 50 characters')
+    .withMessage('Name must be between 2 and 50 characters'),
+  body('showLastSeen').optional().isBoolean().withMessage('showLastSeen must be true or false'),
+  body('showOnlineStatus').optional().isBoolean().withMessage('showOnlineStatus must be true or false'),
+  body('allowReadReceipts').optional().isBoolean().withMessage('allowReadReceipts must be true or false'),
+  body('theme').optional().isIn(['aurora', 'sunset', 'midnight']).withMessage('theme is invalid'),
+  body('wallpaper').optional().isIn(['nebula', 'dunes', 'grid', 'rain']).withMessage('wallpaper is invalid')
 ];
 
 module.exports = {

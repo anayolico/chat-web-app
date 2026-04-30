@@ -52,7 +52,8 @@ const formatMessage = (message) => {
     id: message._id,
     chatId: message.chatId?.toString() || '',
     senderId: message.senderId.toString(),
-    receiverId: message.receiverId.toString(),
+    receiverId: message.receiverId?.toString() || '',
+    senderName: message.senderName || message.sender?.name || '',
     content: isDeleted ? 'This message was deleted' : message.content,
     type: message.type,
     createdAt: message.createdAt,
@@ -72,6 +73,28 @@ const formatMessage = (message) => {
     editedAt: message.editedAt || null,
     isDeleted,
     deletedAt: message.deletedAt || null,
+    replyTo: message.replyTo?.messageId
+      ? {
+          messageId: message.replyTo.messageId?.toString() || '',
+          senderId: message.replyTo.senderId?.toString() || '',
+          content: message.replyTo.content || '',
+          type: message.replyTo.type || 'text',
+          fileName: message.replyTo.fileName || ''
+        }
+      : null,
+    forwardedFrom: message.forwardedFrom?.messageId
+      ? {
+          messageId: message.forwardedFrom.messageId?.toString() || '',
+          senderId: message.forwardedFrom.senderId?.toString() || '',
+          name: message.forwardedFrom.name || ''
+        }
+      : null,
+    isPinned: (message.pinnedBy || []).length > 0,
+    reactions: (message.reactions || []).map((reaction) => ({
+      userId: reaction.userId?.toString() || '',
+      emoji: reaction.emoji || '',
+      createdAt: reaction.createdAt || null
+    })),
     statusByUser: (message.statusByUser || []).map((receipt) => ({
       userId: receipt.userId?.toString() || '',
       status: receipt.status || 'sent',

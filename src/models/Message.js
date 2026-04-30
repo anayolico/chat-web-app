@@ -18,13 +18,54 @@ const messageSchema = new mongoose.Schema(
     receiverId: {
       type: mongoose.Schema.Types.ObjectId,
       ref: 'User',
-      required: [true, 'Receiver is required']
+      default: null
     },
     content: {
       type: String,
       default: '',
       trim: true,
       maxlength: [5000, 'Message content cannot exceed 5000 characters']
+    },
+    replyTo: {
+      messageId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Message',
+        default: null
+      },
+      senderId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null
+      },
+      content: {
+        type: String,
+        default: ''
+      },
+      type: {
+        type: String,
+        enum: ['text', 'image', 'audio', 'file'],
+        default: 'text'
+      },
+      fileName: {
+        type: String,
+        default: ''
+      }
+    },
+    forwardedFrom: {
+      messageId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'Message',
+        default: null
+      },
+      senderId: {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User',
+        default: null
+      },
+      name: {
+        type: String,
+        default: ''
+      }
     },
     type: {
       type: String,
@@ -76,6 +117,31 @@ const messageSchema = new mongoose.Schema(
       default: null
     },
     deletedFor: [
+      {
+        type: mongoose.Schema.Types.ObjectId,
+        ref: 'User'
+      }
+    ],
+    reactions: [
+      {
+        userId: {
+          type: mongoose.Schema.Types.ObjectId,
+          ref: 'User',
+          required: true
+        },
+        emoji: {
+          type: String,
+          required: true,
+          trim: true,
+          maxlength: [32, 'Reaction emoji cannot exceed 32 characters']
+        },
+        createdAt: {
+          type: Date,
+          default: Date.now
+        }
+      }
+    ],
+    pinnedBy: [
       {
         type: mongoose.Schema.Types.ObjectId,
         ref: 'User'

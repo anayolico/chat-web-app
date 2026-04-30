@@ -2,6 +2,8 @@
 // and password reset functionality
 
 const bcrypt = require('bcryptjs');
+const crypto = require('crypto');
+const jwt = require('jsonwebtoken');
 const { StatusCodes } = require('http-status-codes');
 
 const User = require('../models/User');
@@ -12,6 +14,44 @@ const { generateOTP, hashOTP, getTokenExpiry } = require('../utils/resetTokenGen
 const { sendPasswordResetOtpSms } = require('../services/smsService');
 const uploadFileToCloudinary = require('../utils/uploadFileToCloudinary');
 
+const buildTokenHash = (token) => crypto.createHash('sha256').update(token).digest('hex');
+const getRefreshSecret = () => process.env.REFRESH_TOKEN_SECRET || process.env.JWT_SECRET;
+const getRefreshExpiresIn = () => process.env.REFRESH_TOKEN_EXPIRES_IN || '30d';
+const getRefreshTtlMs = () => Number(process.env.REFRESH_TOKEN_TTL_MS || 30 * 24 * 60 * 60 * 1000);
+const allowedThemes = new Set(['aurora', 'sunset', 'midnight']);
+const allowedWallpapers = new Set(['nebula', 'dunes', 'grid', 'rain']);
+
+const pruneExpiredRefreshTokens = (refreshTokens = []) =>
+  refreshTokens.filter((entry) => entry?.expiresAt && new Date(entry.expiresAt).getTime() > Date.now());
+
+const issueAuthTokens = async (user) => {
+  const accessToken = generateToken({ userId: user._id });
+  const refreshToken = generateToken(
+    {
+      userId: user._id,
+      type: 'refresh'
+    },
+    {
+      secret: getRefreshSecret(),
+      expiresIn: getRefreshExpiresIn()
+    }
+  );
+
+  const nextRefreshTokens = pruneExpiredRefreshTokens(user.refreshTokens || []);
+  nextRefreshTokens.push({
+    tokenHash: buildTokenHash(refreshToken),
+    expiresAt: new Date(Date.now() + getRefreshTtlMs()),
+    createdAt: new Date()
+  });
+  user.refreshTokens = nextRefreshTokens;
+  await user.save({ validateBeforeSave: false });
+
+  return {
+    token: accessToken,
+    refreshToken
+  };
+};
+
 // Build consistent auth response to avoid leaking sensitive fields
 const buildAuthResponse = (user) => ({
   id: user._id,
@@ -19,7 +59,17 @@ const buildAuthResponse = (user) => ({
   phone: user.phone,
   profilePic: user.profilePic,
   createdAt: user.createdAt,
-  lastSeen: user.lastSeen || null
+  lastSeen: user.lastSeen || null,
+  privacy: {
+    showLastSeen: user.privacy?.showLastSeen !== false,
+    showOnlineStatus: user.privacy?.showOnlineStatus !== false,
+    allowReadReceipts: user.privacy?.allowReadReceipts !== false
+  },
+  preferences: {
+    theme: user.preferences?.theme || 'aurora',
+    wallpaper: user.preferences?.wallpaper || 'nebula'
+  },
+  blockedUsers: (user.blockedUsers || []).map((blockedUserId) => blockedUserId.toString())
 });
 
 // User registration handler
@@ -44,13 +94,13 @@ const register = asyncHandler(async (req, res) => {
   });
 
   // Generate JWT token
-  const token = generateToken({ userId: user._id });
+  const tokens = await issueAuthTokens(user);
 
   res.status(StatusCodes.CREATED).json({
     success: true,
     message: 'User registered successfully',
     data: {
-      token,
+      ...tokens,
       user: buildAuthResponse(user)
     }
   });
@@ -73,15 +123,86 @@ const login = asyncHandler(async (req, res) => {
   }
 
   // Generate JWT token
-  const token = generateToken({ userId: user._id });
+  const tokens = await issueAuthTokens(user);
 
   res.status(StatusCodes.OK).json({
     success: true,
     message: 'Login successful',
     data: {
-      token,
+      ...tokens,
       user: buildAuthResponse(user)
     }
+  });
+});
+
+const refreshSession = asyncHandler(async (req, res) => {
+  const refreshToken = req.body.refreshToken?.toString().trim();
+
+  if (!refreshToken) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'refreshToken is required');
+  }
+
+  let decoded;
+  try {
+    decoded = jwt.verify(refreshToken, getRefreshSecret());
+  } catch (_error) {
+    throw new ApiError(StatusCodes.UNAUTHORIZED, 'Invalid or expired refresh token');
+  }
+
+  if (decoded.type !== 'refresh') {
+    throw new ApiError(StatusCodes.UNAUTHORIZED, 'Invalid refresh token type');
+  }
+
+  const user = await User.findById(decoded.userId).select('+refreshTokens');
+  if (!user) {
+    throw new ApiError(StatusCodes.UNAUTHORIZED, 'User no longer exists');
+  }
+
+  const tokenHash = buildTokenHash(refreshToken);
+  const activeTokens = pruneExpiredRefreshTokens(user.refreshTokens || []);
+  const isKnownToken = activeTokens.some((entry) => entry.tokenHash === tokenHash);
+
+  if (!isKnownToken) {
+    user.refreshTokens = activeTokens;
+    await user.save({ validateBeforeSave: false });
+    throw new ApiError(StatusCodes.UNAUTHORIZED, 'Refresh token has been revoked');
+  }
+
+  user.refreshTokens = activeTokens.filter((entry) => entry.tokenHash !== tokenHash);
+  const tokens = await issueAuthTokens(user);
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    message: 'Session refreshed',
+    data: {
+      ...tokens,
+      user: buildAuthResponse(user)
+    }
+  });
+});
+
+const logout = asyncHandler(async (req, res) => {
+  const refreshToken = req.body.refreshToken?.toString().trim();
+  const user = await User.findById(req.user._id).select('+refreshTokens');
+
+  if (!user) {
+    throw new ApiError(StatusCodes.NOT_FOUND, 'User not found');
+  }
+
+  const activeTokens = pruneExpiredRefreshTokens(user.refreshTokens || []);
+
+  if (refreshToken) {
+    const tokenHash = buildTokenHash(refreshToken);
+    user.refreshTokens = activeTokens.filter((entry) => entry.tokenHash !== tokenHash);
+  } else {
+    user.refreshTokens = [];
+  }
+
+  await user.save({ validateBeforeSave: false });
+
+  res.status(StatusCodes.OK).json({
+    success: true,
+    message: 'Logged out successfully'
   });
 });
 
@@ -99,13 +220,38 @@ const getCurrentUser = asyncHandler(async (req, res) => {
 const updateCurrentUser = asyncHandler(async (req, res) => {
   const nextName = req.body.name?.toString().trim();
 
-  if (!nextName) {
-    throw new ApiError(StatusCodes.BAD_REQUEST, 'Name is required');
+  const updates = {};
+
+  if (nextName) {
+    updates.name = nextName;
   }
 
-  const updates = {
-    name: nextName
-  };
+  if (typeof req.body.showLastSeen !== 'undefined') {
+    updates['privacy.showLastSeen'] = req.body.showLastSeen === 'true' || req.body.showLastSeen === true;
+  }
+
+  if (typeof req.body.showOnlineStatus !== 'undefined') {
+    updates['privacy.showOnlineStatus'] = req.body.showOnlineStatus === 'true' || req.body.showOnlineStatus === true;
+  }
+
+  if (typeof req.body.allowReadReceipts !== 'undefined') {
+    updates['privacy.allowReadReceipts'] =
+      req.body.allowReadReceipts === 'true' || req.body.allowReadReceipts === true;
+  }
+
+  const nextTheme = req.body.theme?.toString().trim();
+  if (nextTheme) {
+    updates['preferences.theme'] = allowedThemes.has(nextTheme) ? nextTheme : 'aurora';
+  }
+
+  const nextWallpaper = req.body.wallpaper?.toString().trim();
+  if (nextWallpaper) {
+    updates['preferences.wallpaper'] = allowedWallpapers.has(nextWallpaper) ? nextWallpaper : 'nebula';
+  }
+
+  if (Object.keys(updates).length === 0 && !req.file) {
+    throw new ApiError(StatusCodes.BAD_REQUEST, 'At least one profile field is required');
+  }
 
   // Handle profile picture upload if provided
   if (req.file) {
@@ -244,6 +390,8 @@ const resetPassword = asyncHandler(async (req, res) => {
 module.exports = {
   register,
   login,
+  logout,
+  refreshSession,
   getCurrentUser,
   updateCurrentUser,
   forgotPassword,
